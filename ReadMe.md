@@ -1,6 +1,6 @@
 # PayPig
 ## _Be cause you have too much gil_
-======
+
 
 You need:
 macro chain (dalamuds official repo)
