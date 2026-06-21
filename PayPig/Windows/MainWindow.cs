@@ -1,0 +1,37 @@
+using System.Numerics;
+using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Windowing;
+
+namespace PayPig.Windows;
+
+public sealed class MainWindow : Window, IDisposable
+{
+    private readonly Plugin plugin;
+
+    public MainWindow(Plugin plugin) : base("PayPig##Main")
+    {
+        this.plugin = plugin;
+        SizeConstraints = new WindowSizeConstraints
+        {
+            MinimumSize = new Vector2(375, 200),
+            MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
+        };
+    }
+
+    public void Dispose() { }
+
+    public override void Draw()
+    {
+        ImGui.TextUnformatted("PayPig is loaded.");
+        ImGui.Separator();
+
+        if (Plugin.PlayerState.IsLoaded)
+            ImGui.TextUnformatted($"Logged in as: {Plugin.PlayerState.CharacterName}");
+        else
+            ImGui.TextUnformatted("Not logged in.");
+
+        ImGui.Spacing();
+        if (ImGui.Button("Open Settings"))
+            plugin.ToggleConfigUi();
+    }
+}

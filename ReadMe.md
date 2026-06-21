@@ -1,38 +1,39 @@
 # PayPig
-## _Be cause you have too much gil_
 
+A scaffolded [Dalamud](https://github.com/goatcorp/Dalamud) plugin for FFXIV.
 
-You need:
-macro chain (dalamuds official repo)
-ooblugin ([UnknownX7](https://github.com/UnknownX7/DalamudPluginRepo))
-fractionality ([UnknownX7](https://github.com/UnknownX7/DalamudPluginRepo))
-
-2 Macros with the following and right next to each other:
-```
-/wait 0.1
-/sendkey NumPad4
-/wait 0.1
-/sendkey NumPad2
-/wait 0.1
-/sendkey NumPad0
-/wait 0.1
-/sendkey NumPad2
-/wait 0.1
-/sendkey NumPad0
-/wait 0.1
-/sendkey NumPad0
-/wait 0.1
-/sendkey NumPad2
-/nextmacro
-```
+## Structure
 
 ```
-/wait 0.1
-/sendkey NumPad2
-/wait 0.1
-/sendkey NumPad0
+PayPig/
+├── PayPig.sln
+├── .gitignore
+└── PayPig/
+    ├── PayPig.csproj        # Dalamud.NET.Sdk project
+    ├── PayPig.json          # plugin manifest
+    ├── Plugin.cs            # entry point (IDalamudPlugin)
+    ├── Configuration.cs     # persisted settings
+    └── Windows/
+        ├── MainWindow.cs    # /paypig
+        └── ConfigWindow.cs  # /paypig config
 ```
 
-One the plugin is loaded: 
-`/gilsetmacro individual macro#` or `/gilsetmacro shared macro#`
-Then target someone and type `/giladdowner` and watch as all your pitiful gil is drained away.
+## Build
+
+```pwsh
+dotnet build PayPig/PayPig.csproj -c Debug
+```
+
+`Dalamud.NET.Sdk` resolves the Dalamud reference assemblies from
+`%AppData%\XIVLauncher\addon\Hooks\dev`. If yours live elsewhere, set the
+`DALAMUD_HOME` environment variable to that folder.
+
+The build output is `PayPig\bin\Debug\PayPig.dll` (alongside the generated
+`PayPig.json` manifest). Add **that folder** under **Dalamud Settings →
+Experimental → Dev Plugin Locations**, then enable PayPig in `/xlplugins`
+(Dev Tools → see installed dev plugins).
+
+## Commands
+
+- `/paypig` — open the main window
+- `/paypig config` — open settings

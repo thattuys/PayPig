@@ -1,206 +1,402 @@
-﻿using Dalamud.IoC;
-using Dalamud.Plugin;
-using Dalamud.Game.Gui;
-using System;
-using System.Linq;
-using Dalamud.Game.Text;
-using Dalamud.Game.Text.SeStringHandling;
-using FFXIVClientStructs.FFXIV.Component.GUI;
-using FFXIVClientStructs.FFXIV.Client.UI.Shell;
-using FFXIVClientStructs.FFXIV.Client.UI.Misc;
-using Dalamud.Game.Text.SeStringHandling.Payloads;
+using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Command;
-using Dalamud.Game.ClientState.Objects;
+using Dalamud.IoC;
+using Dalamud.Plugin;
+using Dalamud.Plugin.Services;
+using Dalamud.Interface.Windowing;
+using System.Text.RegularExpressions;
+using PayPig.Windows;
+using Dalamud.Game.Chat;
+using Dalamud.Game.Text;
 using Dalamud.Game.ClientState.Objects.SubKinds;
-using Dalamud.Game.ClientState;
-using System.Runtime.InteropServices;
-using Dalamud.Game;
-using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace PayPig;
 
-public unsafe class Plugin : IDalamudPlugin
+public sealed class Plugin : IDalamudPlugin
 {
-    public string Name => "Pay Pig";
-    Configuration _configuration;
+    private const string CommandName = "/paypig";
 
-    [PluginService]
-    [RequiredVersion("1.0")]
-    public static DalamudPluginInterface PluginInterface { get; set; } = null!;
+    [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
+    [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
+    [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
+    [PluginService] internal static IClientState ClientState { get; private set; } = null!;
+    [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
+    [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
+    [PluginService] internal static ITargetManager TargetManager { get; private set; } = null!;
+    [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
+    [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
+    [PluginService] internal static IFramework Framework { get; private set; } = null!;
+    [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
-    [PluginService]
-    [RequiredVersion("1.0")]
-    public static CommandManager CommandManager { get; set; } = null!;
+    public Configuration Configuration { get; init; }
+    public Whitelist Whitelist { get; init; }
 
-    [PluginService]
-    [RequiredVersion("1.0")]
-    public static ObjectTable ObjectTable { get; set; } = null!;
-
-    [PluginService]
-    [RequiredVersion("1.0")]
-    public static ClientState ClientState { get; set; } = null!;
-
-    [PluginService]
-    [RequiredVersion("1.0")]
-    public static ChatGui ChatGui { get; set; } = null!;
-
-    [PluginService]
-    [RequiredVersion("1.0")]
-    public static GameGui GameGui { get; set; } = null!;
-
-    private static string DrainModeCommand => "/gildrain";
-    private static string AddFinDomCommand => "/giladdowner";
-    private static string SetMacroCommand => "/gilmacro";
-
-    public static nint emoteAgent = nint.Zero;
-    public delegate void DoEmoteDelegate(nint agent, uint emoteID, long a3, bool a4, bool a5);
-    public static DoEmoteDelegate? DoEmote;
-
-    private bool doGrovel;
+    public readonly WindowSystem WindowSystem = new("PayPig");
+    private MainWindow MainWindow { get; init; }
+    private ConfigWindow ConfigWindow { get; init; }
 
     public Plugin()
     {
-        _configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
-        _configuration.Initialize(PluginInterface);
+        Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        Whitelist = new Whitelist(Path.Combine(PluginInterface.ConfigDirectory.FullName, "whitelist.json"));
 
-        CommandManager.AddHandler(
-            DrainModeCommand,
-            new CommandInfo(this.DrainMode) {
-                HelpMessage = "Allows anyone to take the piggies money",
-                ShowInHelp = true
+        MainWindow = new MainWindow(this);
+        ConfigWindow = new ConfigWindow(this);
+
+        WindowSystem.AddWindow(MainWindow);
+        WindowSystem.AddWindow(ConfigWindow);
+
+        CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
+        {
+            HelpMessage = "Open the PayPig window. Use \"/paypig config\" for settings."
         });
 
-        CommandManager.AddHandler(
-            AddFinDomCommand,
-            new CommandInfo(this.AddFinDom) {
-                HelpMessage = "Get on your knees, look at the person that better deserves your money and run this to allow them to take what is theirs",
-                ShowInHelp = true
-        });
+        PluginInterface.UiBuilder.Draw += DrawUi;
+        PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
+        PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
+        Framework.Update += OnFrameworkUpdate;
+        ChatGui.ChatMessage += OnChatMessage;
 
-        CommandManager.AddHandler(
-            SetMacroCommand,
-            new CommandInfo(this.SetMacro) {
-                HelpMessage = "Sets the piggies macro to give their gil to the rightful owner",
-                ShowInHelp = true
-        });
-
-        var sigScanner = new SigScanner();
-
-        var agentModule = FFXIVClientStructs.FFXIV.Client.System.Framework.Framework.Instance()->GetUiModule()->GetAgentModule();
-        DoEmote = Marshal.GetDelegateForFunctionPointer<DoEmoteDelegate>(sigScanner.ScanText("E8 ?? ?? ?? ?? E9 ?? ?? ?? ?? B8 0A 00 00 00"));
-        emoteAgent = (nint)agentModule->GetAgentByInternalId(AgentId.Emote);
-
-        ChatGui.ChatMessage += WatchTradeRequest;
-
-        doGrovel = false;
+        // Load confirmation — appears in /xllog. If you DON'T see this after a
+        // reload, the new build isn't actually loaded.
+        Log.Information("PayPig loaded.");
     }
 
-    public void WatchTradeRequest(XivChatType type, uint senderId, ref SeString sender, ref SeString message, ref bool isHandled)
+    // "You hand over 1,000,000 gil." — the definitive amount actually sent.
+    private static readonly Regex HandOverGil =
+        new(@"You hand over ([\d,]+) gil", RegexOptions.Compiled);
+
+    // Node ids of the trade window buttons (from the addon inspector).
+    // NOTE: assumed 33 = Trade, 34 = Cancel — swap if behavior is inverted.
+    private const uint CancelButtonNodeId = 34;
+    private const uint TradeButtonNodeId = 33;
+
+    // Frames to wait after opening before auto-clicking Trade, so the gil we
+    // set has registered. -1 = nothing pending.
+    private int framesUntilConfirm = -1;
+
+    private bool isTradeActive = false;
+    private bool lockCurrentTrade = false;   // true while enforcing a whitelisted trade
+    private WhitelistEntry? pendingEntry;     // partner of the in-progress trade
+
+    private unsafe void OnFrameworkUpdate(IFramework framework)
     {
-        if (isHandled)
+        var trade = GetTradeAddon();
+        var open = trade != null;
+
+        // Edge detection: only act on the transition, not every frame.
+        if (open && !isTradeActive)
+            OnTradeOpened(trade);
+        else if (!open && isTradeActive)
+            OnTradeClosed();
+
+        isTradeActive = open;
+
+        // `trade` is valid for THIS frame only — never cache the pointer.
+        if (open && lockCurrentTrade)
         {
+            // Keep the Cancel button disabled so we can't back out ourselves.
+            SetButtonEnabled(trade, CancelButtonNodeId, false);
+
+            // After a short delay (gil registered), auto-click the Trade button.
+            if (framesUntilConfirm > 0)
+            {
+                framesUntilConfirm--;
+            }
+            else if (framesUntilConfirm == 0)
+            {
+                framesUntilConfirm = -1; // one-shot
+                if (ClickButton(trade, TradeButtonNodeId))
+                    Log.Information("Auto-clicked the Trade button.");
+                else
+                    framesUntilConfirm = 5;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Simulates a click on a button component node by re-dispatching its own
+    /// registered ButtonClick event back through the addon. No-op if the node
+    /// is missing or the button is disabled.
+    /// </summary>
+    private unsafe bool ClickButton(AddonTrade* trade, uint nodeId)
+    {
+        if (nodeId == 0)
+        {
+            Log.Warning("Trade button NodeID is not set (0) — fill in TradeButtonNodeId.");
+            return false;
+        }
+
+        var node = trade->AtkUnitBase.GetNodeById(nodeId);
+        if (node == null)
+        {
+            Log.Warning("ClickButton: node {Id} not found in the Trade addon.", nodeId);
+            return false;
+        }
+
+        var button = node->GetAsAtkComponentButton();
+        if (button == null)
+        {
+            Log.Warning("ClickButton: node {Id} is not a button component.", nodeId);
+            return false;
+        }
+
+        if (!button->IsEnabled)
+        {
+            Log.Warning("ClickButton: button {Id} is currently disabled.", nodeId);
+            return false;
+        }
+
+        // Find the button's own ButtonClick event so the param matches what the
+        // addon's handler expects, then feed it back in.
+        var evt = node->AtkEventManager.Event;
+        while (evt != null && evt->State.EventType != AtkEventType.ButtonClick)
+            evt = evt->NextEvent;
+        if (evt == null)
+        {
+            Log.Warning("ClickButton: no ButtonClick event registered on node {Id}.", nodeId);
+            return false;
+        }
+
+        var data = new AtkEventData();
+        trade->AtkUnitBase.ReceiveEvent(AtkEventType.ButtonClick, (int)evt->Param, evt, &data);
+        return true;
+    }
+
+    /// <summary>Enable/disable a button component node. No-op if the node isn't found.</summary>
+    private unsafe void SetButtonEnabled(AddonTrade* trade, uint nodeId, bool enabled)
+    {
+        if (nodeId == 0)
+            return;
+
+        var node = trade->AtkUnitBase.GetNodeById(nodeId);
+        if (node == null)
+            return;
+
+        var button = node->GetAsAtkComponentButton();
+        if (button == null)
+            return;
+
+        button->SetEnabledState(enabled);
+    }
+
+    /// <summary>
+    /// Reads the integer shown in a text node nested inside a component node.
+    /// e.g. ReadNodeNumber(trade, 13, 2) reads the send-gil text. Returns 0 if
+    /// any node in the path is missing or the text isn't numeric.
+    /// </summary>
+    private unsafe uint ReadNodeNumber(AddonTrade* trade, uint componentNodeId, uint textNodeId)
+    {
+        var node = trade->AtkUnitBase.GetNodeById(componentNodeId);
+        if (node == null)
+            return 0;
+
+        var component = node->GetAsAtkComponentNode();
+        if (component == null || component->Component == null)
+            return 0;
+
+        // The text node lives in the component's own node list, not the
+        // addon's top-level list — look it up via the component.
+        var textNode = component->Component->GetTextNodeById(textNodeId);
+        if (textNode == null)
+            return 0;
+
+        // Strip grouping separators / spaces; keep digits only.
+        var text = textNode->NodeText.ToString();
+        var digits = new string(text.Where(char.IsDigit).ToArray());
+        return uint.TryParse(digits, out var value) ? value : 0u;
+    }
+
+    /// <summary>
+    /// Re-resolves the Trade addon every call and validates it's actually
+    /// open and ready. Returns null when there's no usable trade window.
+    /// </summary>
+    private unsafe AddonTrade* GetTradeAddon()
+    {
+        // GetAddonByName now returns a managed AtkUnitBasePtr wrapper.
+        var unitBase = GameGui.GetAddonByName("Trade", 1);
+        // IsReady = fully constructed; IsVisible = currently shown.
+        if (unitBase.IsNull || !unitBase.IsReady || !unitBase.IsVisible)
+            return null;
+
+        // Drop to the native struct pointer only when you need struct fields.
+        return (AddonTrade*)unitBase.Address;
+    }
+
+    private unsafe void OnTradeOpened(AddonTrade* trade)
+    {
+        // Reset any prior trade state.
+        lockCurrentTrade = false;
+        pendingEntry = null;
+        framesUntilConfirm = -1;
+
+        // Who are we trading with?
+        var partner = GetTradePartner();
+        if (partner is null)
+        {
+            Log.Warning("Trade opened but the partner could not be resolved.");
             return;
         }
-        if (type == (XivChatType)569)
+
+        var (name, worldId) = partner.Value;
+
+        // Whitelist gate: only auto-send to people on the list.
+        var entry = Whitelist.Find(name, worldId);
+        if (entry is null)
         {
-            var playerPayload = message.Payloads[0] as PlayerPayload;
-            if ( _configuration.inDrainMode
-                || (playerPayload != null && this._configuration.FinDommies.Any(
-                    x =>
-                        x.Name == playerPayload.PlayerName
-                        && x.HomeworldName == playerPayload.World.Name
-                    )
-                )
-            ) {
-                var agentInterface = GameGui.FindAgentInterface("Trade");
-                if (agentInterface == IntPtr.Zero) return;
-                var agent = (AgentInterface*)agentInterface;
-                if (agent->IsAgentActive())
-                {
-                    if (_configuration.isSharedMacro) {
-                        RaptureShellModule.Instance->ExecuteMacro((RaptureMacroModule.Instance->Shared)[_configuration.Macro]);
-                    } else {
-                        RaptureShellModule.Instance->ExecuteMacro((RaptureMacroModule.Instance->Individual)[_configuration.Macro]);
-                    }
-                    doGrovel = true;
-                }
-            }
-        } else if (type == XivChatType.SystemMessage && message.TextValue == "Trade complete." && doGrovel) {
-            if (DoEmote != null)
-                DoEmote(emoteAgent, 47, 0, true, true);
-            doGrovel = false;
+            ChatGui.Print($"[PayPig] {name} (world {worldId}) is not whitelisted — no gil sent.");
+            Log.Information("Trade with non-whitelisted {Name}@{World}.", name, worldId);
+            return;
         }
+
+        var inventory = InventoryManager.Instance();
+        var gilHeld = inventory != null ? inventory->GetGil() : 0u;
+
+        // Per-trade max, capped by what we hold and the remaining daily budget.
+        var amount = Math.Min(Configuration.MaxGilPerTrade, gilHeld);
+        var today = DateTime.Now.ToString("yyyy-MM-dd");
+        var remaining = Whitelist.RemainingToday(entry, today);
+        if (remaining is uint dailyCap)
+            amount = Math.Min(amount, dailyCap);
+
+        if (inventory != null)
+            inventory->SetTradeGilAmount(amount);
+
+        // Arm enforcement: lock the window (no self-cancel) and remember the
+        // partner so we can record the daily total when the trade completes.
+        lockCurrentTrade = true;
+        pendingEntry = entry;
+        framesUntilConfirm = 5; // let the gil register, then auto-click Trade
+
+        Log.Information(
+            "Trade with {Name}@{World}: set send gil to {Amount:N0} (daily remaining {Rem}).",
+            name, worldId, amount, remaining?.ToString("N0") ?? "unlimited");
+        ChatGui.Print($"[PayPig] {name}: set send gil to {amount:N0}.");
     }
 
-    public void DrainMode(string command, string arguments)
+    /// <summary>
+    /// Resolves the current trade partner to (name, home-world id) via their
+    /// entity id. Returns null if there's no partner or they aren't a player.
+    /// </summary>
+    private unsafe (string Name, uint WorldId)? GetTradePartner()
     {
-        _configuration.inDrainMode = !_configuration.inDrainMode;
-        if (_configuration.inDrainMode) {
-            ChatGui.Print("[PayPig] You are now in drain mode. Enjoy walking~");
-        } else {
-            ChatGui.Print("[PayPig] Aww is the piggy drained?");
-        }
-        this._configuration.Save();
+        var inventory = InventoryManager.Instance();
+        if (inventory == null)
+            return null;
+
+        var obj = ObjectTable.SearchByEntityId(inventory->TradePartnerEntityId);
+        if (obj is IPlayerCharacter pc)
+            return (pc.Name.TextValue, pc.HomeWorld.RowId);
+
+        return null;
     }
 
-    public void AddFinDom(string command, string arguments)
+    /// <summary>Resolves a world id to its server name, e.g. 91 -> "Lich".</summary>
+    internal static string GetWorldName(uint worldId)
     {
-        if (ObjectTable.SingleOrDefault(
-                x => x is PlayerCharacter
-                    && x.ObjectId != 0
-                    && x.ObjectId != ClientState.LocalPlayer?.ObjectId
-                    && x.ObjectId == ClientState.LocalPlayer?.TargetObjectId) is PlayerCharacter actor) {
-        
-            var item = new FinDoms(actor);
-            if (!this._configuration.FinDommies.Any(
-                x => x.Name == item.Name && x.HomeworldName == item.HomeworldName
-            )) {
-                this._configuration.FinDommies.Add(item);
-            }
-            ChatGui.Print("[PayPig] Good piggy, now let them know and stand there and look pitiful as your wallet is drained.");
-        } else {
-            ChatGui.Print("[PayPig] Poor wittle piggy cannot even find their superior.");
-        }
-        this._configuration.Save();
+        var row = DataManager.GetExcelSheet<Lumina.Excel.Sheets.World>().GetRowOrDefault(worldId);
+        return row?.Name.ExtractText() ?? $"#{worldId}";
     }
 
-    public void SetMacro(string command, string arguments)
+    /// <summary>
+    /// Adds the currently targeted player to the whitelist. Returns false (with
+    /// a reason) if there's no player target or they're already listed.
+    /// </summary>
+    internal bool TryAddCurrentTargetToWhitelist(out string message)
     {
-        bool isDumbPiggy = false;
-        var splitArgs = arguments.Split(" ");
-        if (splitArgs.Length != 2) {
-            isDumbPiggy = true;
-        } else {
-            if (splitArgs[0].ToLower() != "individual" && splitArgs[0] != "shared") {
-                isDumbPiggy = true;
-            } else {
-                Int32 macroNumber = 0;
-                if (Int32.TryParse(splitArgs[1], out macroNumber) == false) {
-                    isDumbPiggy = true;
-                } else {
-                    if (macroNumber < 0 || macroNumber > 99) {
-                        isDumbPiggy = true;
-                    } else {
-                        _configuration.Macro = macroNumber;
-                        _configuration.isSharedMacro = (splitArgs[0].ToLower() == "shared");
-                    }
-                }
-            }
+        if (TargetManager.Target is not IPlayerCharacter pc)
+        {
+            message = "No player targeted.";
+            return false;
         }
 
-        if (isDumbPiggy) {
-            ChatGui.Print("[PayPig] Poor dumb piggy. Do you need your dommy to hold you hand for this?");
-        } else {
-            ChatGui.Print("[PayPig] Macro set");
-            this._configuration.Save();
+        var name = pc.Name.TextValue;
+        var worldId = pc.HomeWorld.RowId;
+
+        if (Whitelist.Find(name, worldId) is not null)
+        {
+            message = $"{name} is already whitelisted.";
+            return false;
+        }
+
+        Whitelist.Add(new WhitelistEntry { Name = name, WorldId = worldId, Limit = 0 });
+        message = $"Added {name} - {GetWorldName(worldId)} to the whitelist.";
+        return true;
+    }
+
+    private void OnTradeClosed()
+    {
+        // Stop disabling the Cancel button. We deliberately keep pendingEntry
+        // set — the chat handler decides complete vs. canceled, and that
+        // message can arrive on the same frame the window closes.
+        lockCurrentTrade = false;
+        framesUntilConfirm = -1;
+    }
+
+    /// <summary>
+    /// Settles the in-progress trade off chat. Only acts while a trade is armed
+    /// (pendingEntry != null), so it can't false-trigger on idle chat:
+    ///   "You hand over X gil." -> record X against the daily limit
+    ///   "Trade complete." / "Trade canceled." -> clear the armed trade
+    /// </summary>
+    private void OnChatMessage(IHandleableChatMessage msg)
+    {
+        if (pendingEntry is null)
+            return;
+
+        var text = msg.Message.TextValue;
+
+        // Diagnostic: the new API splits the old combined chat code into
+        // LogKind + Source/TargetKind. Logging it lets us add a precise filter
+        // later if we ever need one.
+        Log.Debug("Trade chat: logKind={Kind} text={Text}", (int)msg.LogKind, text);
+
+        var handOver = HandOverGil.Match(text);
+        if (handOver.Success &&
+            uint.TryParse(handOver.Groups[1].Value.Replace(",", ""), out var sent))
+        {
+            var today = DateTime.Now.ToString("yyyy-MM-dd");
+            Whitelist.RecordSent(pendingEntry, sent, today);
+            Log.Information("Recorded {Gil:N0} gil for {Name}.", sent, pendingEntry.Name);
+            ChatGui.Print($"[PayPig] Recorded {sent:N0} gil for {pendingEntry.Name}.");
+            return; // keep armed until the trade fully resolves below
+        }
+
+        // "cancel" matches both "canceled" and "cancelled" spellings.
+        if (text.Contains("Trade complete", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("Trade cancel", StringComparison.OrdinalIgnoreCase))
+        {
+            pendingEntry = null;
         }
     }
 
     public void Dispose()
     {
-        ChatGui.ChatMessage -= WatchTradeRequest;
-        CommandManager.RemoveHandler(DrainModeCommand);
-        CommandManager.RemoveHandler(AddFinDomCommand);
-        CommandManager.RemoveHandler(SetMacroCommand);
+        WindowSystem.RemoveAllWindows();
+        MainWindow.Dispose();
+        ConfigWindow.Dispose();
+
+        CommandManager.RemoveHandler(CommandName);
+
+        PluginInterface.UiBuilder.Draw -= DrawUi;
+        PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
+        PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
+        Framework.Update -= OnFrameworkUpdate;
+        ChatGui.ChatMessage -= OnChatMessage;
     }
+
+    private void OnCommand(string command, string args)
+    {
+        if (args.Trim().Equals("config", StringComparison.OrdinalIgnoreCase))
+            ToggleConfigUi();
+        else
+            ToggleMainUi();
+    }
+
+    private void DrawUi() => WindowSystem.Draw();
+    public void ToggleMainUi() => MainWindow.Toggle();
+    public void ToggleConfigUi() => ConfigWindow.Toggle();
 }

@@ -1,32 +1,17 @@
-using System;
-using System.Collections.Generic;
 using Dalamud.Configuration;
-using Dalamud.Plugin;
 
 namespace PayPig;
 
 [Serializable]
 public class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 0;
+    public int Version { get; set; } = 1;
 
-    public bool isSharedMacro { get; set; } = false;
-    public int Macro { get; set; } = 0;
+    // Add your persisted settings here.
+    public bool SomeToggle { get; set; } = false;
 
-    public bool inDrainMode { get; set; } = false;
+    // Max gil to send in a single trade. Defaults to 1,000,000.
+    public uint MaxGilPerTrade { get; set; } = 1_000_000;
 
-    public List<FinDoms> FinDommies { get; } = new List<FinDoms>();
-
-    [NonSerialized]
-    private DalamudPluginInterface? PluginInterface;
-
-    public void Initialize(DalamudPluginInterface pluginInterface)
-    {
-        this.PluginInterface = pluginInterface;
-    }
-
-    public void Save()
-    {
-        this.PluginInterface!.SavePluginConfig(this);
-    }
+    public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

@@ -1,7 +1,9 @@
 {
-  "Name": "Pay Pig",
-  "Author": "Tuys",
-  "Description": "Allows the person whos gil you have to take it back easily with no fuss from you.",
-  "Punchline": "For when someone thinks you have too much gil",
-  "RepoUrl": "https://github.com/thattuys/paypig"
+  "Author": "You",
+  "Name": "PayPig",
+  "Punchline": "A findom plugin.",
+  "Description": "Because your gil was never yours to begin with.",
+  "ApplicableVersion": "any",
+  "Tags": [],
+  "RepoUrl": ""
 }
