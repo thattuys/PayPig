@@ -1,0 +1,46 @@
+name: Create a Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # needed to create the GitHub release
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Download Dalamud
+        shell: pwsh
+        run: |
+          curl -O https://goatcorp.github.io/dalamud-distrib/latest.zip
+          # The Dalamud.NET.Sdk resolves reference assemblies from this path.
+          Expand-Archive -Force latest.zip "$env:AppData\XIVLauncher\addon\Hooks\dev"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        # Dalamud.NET.Sdk runs DalamudPackager on Release builds, producing the
+        # installable plugin package at bin/Release/PayPig/latest.zip.
+        run: dotnet build PayPig/PayPig.csproj -c Release --no-restore
+
+      - name: Name the release artifact
+        shell: pwsh
+        run: Copy-Item PayPig/bin/Release/PayPig/latest.zip "PayPig-${{ github.ref_name }}.zip"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PayPig-${{ github.ref_name }}.zip
