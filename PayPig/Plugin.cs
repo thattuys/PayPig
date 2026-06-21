@@ -76,6 +76,10 @@ public sealed class Plugin : IDalamudPlugin
     private const uint CancelButtonNodeId = 34;
     private const uint TradeButtonNodeId = 33;
 
+    // The close (X) button is node 7, nested inside the window component (node 35).
+    private const uint WindowNodeId = 35;
+    private const uint CloseButtonNodeId = 7;
+
     // Frames to wait after opening before auto-clicking Trade, so the gil we
     // set has registered. -1 = nothing pending.
     private int framesUntilConfirm = -1;
@@ -100,8 +104,10 @@ public sealed class Plugin : IDalamudPlugin
         // `trade` is valid for THIS frame only — never cache the pointer.
         if (open && lockCurrentTrade && Configuration.IsEnabled)
         {
-            // Keep the Cancel button disabled so we can't back out ourselves.
+            // Keep the Cancel button disabled and the close (X) button hidden
+            // so we can't back out ourselves.
             SetButtonEnabled(trade, CancelButtonNodeId, false);
+            SetNestedNodeVisible(trade, WindowNodeId, CloseButtonNodeId, false);
 
             // After a short delay (gil registered), auto-click the Trade button.
             if (framesUntilConfirm > 0)
@@ -183,6 +189,27 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         button->SetEnabledState(enabled);
+    }
+
+    /// <summary>
+    /// Show/hide a node nested inside a component node's own node list, e.g. the
+    /// close (X) button (node 7) inside the window component (node 35).
+    /// </summary>
+    private unsafe void SetNestedNodeVisible(AddonTrade* trade, uint componentNodeId, uint childNodeId, bool visible)
+    {
+        var node = trade->AtkUnitBase.GetNodeById(componentNodeId);
+        if (node == null)
+            return;
+
+        var component = node->GetAsAtkComponentNode();
+        if (component == null || component->Component == null)
+            return;
+
+        var child = component->Component->UldManager.SearchNodeById(childNodeId);
+        if (child == null)
+            return;
+
+        child->ToggleVisibility(visible);
     }
 
     /// <summary>
