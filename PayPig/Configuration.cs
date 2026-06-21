@@ -8,7 +8,7 @@ public class Configuration : IPluginConfiguration
     public int Version { get; set; } = 1;
 
     // Add your persisted settings here.
-    public bool SomeToggle { get; set; } = false;
+    public bool IsEnabled { get; set; } = false;
 
     // Max gil to send in a single trade. Defaults to 1,000,000.
     public uint MaxGilPerTrade { get; set; } = 1_000_000;

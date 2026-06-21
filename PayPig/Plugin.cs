@@ -51,7 +51,9 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Open the PayPig window. Use \"/paypig config\" for settings."
+            HelpMessage = "Opens the PayPig menu.\n" +
+                        "/paypig whitelist → Opens the whitelist manager.\n" +
+                        "/paypig toggle → Toggles paypig on or off."
         });
 
         PluginInterface.UiBuilder.Draw += DrawUi;
@@ -96,7 +98,7 @@ public sealed class Plugin : IDalamudPlugin
         isTradeActive = open;
 
         // `trade` is valid for THIS frame only — never cache the pointer.
-        if (open && lockCurrentTrade)
+        if (open && lockCurrentTrade && Configuration.IsEnabled)
         {
             // Keep the Cancel button disabled so we can't back out ourselves.
             SetButtonEnabled(trade, CancelButtonNodeId, false);
@@ -232,6 +234,10 @@ public sealed class Plugin : IDalamudPlugin
         lockCurrentTrade = false;
         pendingEntry = null;
         framesUntilConfirm = -1;
+
+        // Global kill switch — do nothing while disabled.
+        if (!Configuration.IsEnabled)
+            return;
 
         // Who are we trading with?
         var partner = GetTradePartner();
@@ -375,6 +381,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+
         WindowSystem.RemoveAllWindows();
         MainWindow.Dispose();
         ConfigWindow.Dispose();
@@ -390,8 +397,14 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnCommand(string command, string args)
     {
-        if (args.Trim().Equals("config", StringComparison.OrdinalIgnoreCase))
+        var arg = args.Trim().ToLower();
+        if (arg == "whitelist")
             ToggleConfigUi();
+        else if (arg == "toggle")
+        {
+            Configuration.IsEnabled = !Configuration.IsEnabled;
+            Configuration.Save();
+        }
         else
             ToggleMainUi();
     }

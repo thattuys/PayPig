@@ -31,6 +31,14 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextUnformatted("Not logged in.");
 
         ImGui.Spacing();
+        var enabled = plugin.Configuration.IsEnabled;
+        if (ImGui.Checkbox("Enabled", ref enabled))
+        {
+            plugin.Configuration.IsEnabled = enabled;
+            plugin.Configuration.Save();
+        }
+
+        ImGui.Spacing();
         if (ImGui.Button("Open Settings"))
             plugin.ToggleConfigUi();
     }
