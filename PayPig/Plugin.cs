@@ -415,9 +415,9 @@ public sealed class Plugin : IDalamudPlugin
             uint.TryParse(handOver.Groups[1].Value.Replace(",", ""), out var sent) && !Configuration.PublicDrain)
         {
             var today = DateTime.Now.ToString("yyyy-MM-dd");
-            Whitelist.RecordSent(pendingEntry, sent, today);
-            Log.Information("Recorded {Gil:N0} gil for {Name}.", sent, pendingEntry.Name);
-            ChatGui.Print($"[PayPig] Recorded {sent:N0} gil for {pendingEntry.Name}.");
+            Whitelist.RecordSent(pendingEntry!, sent, today);
+            Log.Information("Recorded {Gil:N0} gil for {Name}.", sent, pendingEntry!.Name);
+            ChatGui.Print($"[PayPig] Recorded {sent:N0} gil for {pendingEntry!.Name}.");
             return; // keep armed until the trade fully resolves below
         }
 
