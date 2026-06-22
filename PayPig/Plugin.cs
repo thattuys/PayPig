@@ -71,6 +71,10 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly Regex HandOverGil =
         new(@"You hand over ([\d,]+) gil", RegexOptions.Compiled);
 
+    // "<name> wishes to trade with you." — triggered when someone else opens a trade with us.
+    private static readonly Regex TradeRequest =
+        new(@"(.+) wishes to trade with you\.", RegexOptions.Compiled);
+
     // Node ids of the trade window buttons (from the addon inspector).
     // NOTE: assumed 33 = Trade, 34 = Cancel — swap if behavior is inverted.
     private const uint CancelButtonNodeId = 34;
@@ -87,6 +91,7 @@ public sealed class Plugin : IDalamudPlugin
     private bool isTradeActive = false;
     private bool lockCurrentTrade = false;   // true while enforcing a whitelisted trade
     private WhitelistEntry? pendingEntry;     // partner of the in-progress trade
+    private bool incomingTradeRequest = false; // true when someone else opened trade with us
 
     private unsafe void OnFrameworkUpdate(IFramework framework)
     {
@@ -94,7 +99,8 @@ public sealed class Plugin : IDalamudPlugin
         var open = trade != null;
 
         // Edge detection: only act on the transition, not every frame.
-        if (open && !isTradeActive)
+        // Only trigger auto-trade logic if this was an incoming trade request.
+        if (open && !isTradeActive && incomingTradeRequest)
             OnTradeOpened(trade);
         else if (!open && isTradeActive)
             OnTradeClosed();
@@ -243,7 +249,7 @@ public sealed class Plugin : IDalamudPlugin
     /// Re-resolves the Trade addon every call and validates it's actually
     /// open and ready. Returns null when there's no usable trade window.
     /// </summary>
-    private unsafe AddonTrade* GetTradeAddon()
+    static private unsafe AddonTrade* GetTradeAddon()
     {
         // GetAddonByName now returns a managed AtkUnitBasePtr wrapper.
         var unitBase = GameGui.GetAddonByName("Trade", 1);
@@ -261,6 +267,7 @@ public sealed class Plugin : IDalamudPlugin
         lockCurrentTrade = false;
         pendingEntry = null;
         framesUntilConfirm = -1;
+        incomingTradeRequest = false; // consumed
 
         // Global kill switch — do nothing while disabled.
         if (!Configuration.IsEnabled)
@@ -278,7 +285,7 @@ public sealed class Plugin : IDalamudPlugin
 
         // Whitelist gate: only auto-send to people on the list.
         var entry = Whitelist.Find(name, worldId);
-        if (entry is null)
+        if (entry is null && !Configuration.PublicDrain)
         {
             ChatGui.Print($"[PayPig] {name} (world {worldId}) is not whitelisted — no gil sent.");
             Log.Information("Trade with non-whitelisted {Name}@{World}.", name, worldId);
@@ -291,9 +298,16 @@ public sealed class Plugin : IDalamudPlugin
         // Per-trade max, capped by what we hold and the remaining daily budget.
         var amount = Math.Min(Configuration.MaxGilPerTrade, gilHeld);
         var today = DateTime.Now.ToString("yyyy-MM-dd");
-        var remaining = Whitelist.RemainingToday(entry, today);
-        if (remaining is uint dailyCap)
-            amount = Math.Min(amount, dailyCap);
+        if (!Configuration.PublicDrain && entry != null)
+        {
+            var remaining = Whitelist.RemainingToday(entry, today);
+            if (remaining is uint dailyCap)
+                amount = Math.Min(amount, dailyCap);
+
+            Log.Information(
+                "Trade with {Name}@{World}: set send gil to {Amount:N0} (daily remaining {Rem}).",
+                name, worldId, amount, remaining?.ToString("N0") ?? "unlimited");
+        }
 
         if (inventory != null)
             inventory->SetTradeGilAmount(amount);
@@ -304,9 +318,6 @@ public sealed class Plugin : IDalamudPlugin
         pendingEntry = entry;
         framesUntilConfirm = 5; // let the gil register, then auto-click Trade
 
-        Log.Information(
-            "Trade with {Name}@{World}: set send gil to {Amount:N0} (daily remaining {Rem}).",
-            name, worldId, amount, remaining?.ToString("N0") ?? "unlimited");
         ChatGui.Print($"[PayPig] {name}: set send gil to {amount:N0}.");
     }
 
@@ -367,6 +378,7 @@ public sealed class Plugin : IDalamudPlugin
         // message can arrive on the same frame the window closes.
         lockCurrentTrade = false;
         framesUntilConfirm = -1;
+        incomingTradeRequest = false; // reset on close
     }
 
     /// <summary>
@@ -377,19 +389,30 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private void OnChatMessage(IHandleableChatMessage msg)
     {
-        if (pendingEntry is null)
-            return;
-
         var text = msg.Message.TextValue;
 
-        // Diagnostic: the new API splits the old combined chat code into
-        // LogKind + Source/TargetKind. Logging it lets us add a precise filter
-        // later if we ever need one.
-        Log.Debug("Trade chat: logKind={Kind} text={Text}", (int)msg.LogKind, text);
+        // Check for incoming trade request: "<name> wishes to trade with you."
+        // Also check with simpler Contains for debugging
+        if (text.Contains("wishes to trade with you", StringComparison.OrdinalIgnoreCase))
+        {
+            incomingTradeRequest = true;
+            Log.Information("Incoming trade request detected in message: {Text}", text);
+            ChatGui.Print($"[PayPig] Incoming trade request detected: {text}");
+        }
+
+        var tradeRequest = TradeRequest.Match(text);
+        if (tradeRequest.Success)
+        {
+            Log.Information("Regex matched trade request from {Name}.", tradeRequest.Groups[1].Value);
+        }
+
+        // Handle gil tracking and trade completion for active trades
+        if (pendingEntry is null && !text.Contains("wishes to trade", StringComparison.OrdinalIgnoreCase))
+            return;
 
         var handOver = HandOverGil.Match(text);
         if (handOver.Success &&
-            uint.TryParse(handOver.Groups[1].Value.Replace(",", ""), out var sent))
+            uint.TryParse(handOver.Groups[1].Value.Replace(",", ""), out var sent) && !Configuration.PublicDrain)
         {
             var today = DateTime.Now.ToString("yyyy-MM-dd");
             Whitelist.RecordSent(pendingEntry, sent, today);

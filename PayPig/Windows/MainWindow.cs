@@ -39,6 +39,14 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
+        var publicDrain = plugin.Configuration.PublicDrain;
+        if (ImGui.Checkbox("Public Drain Mode(You trade to anyone with no limits)", ref publicDrain))
+        {
+            plugin.Configuration.PublicDrain = publicDrain;
+            plugin.Configuration.Save();
+        }
+
+        ImGui.Spacing();
         if (ImGui.Button("Open Settings"))
             plugin.ToggleConfigUi();
     }
