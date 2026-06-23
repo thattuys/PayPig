@@ -138,42 +138,20 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private unsafe bool ClickButton(AddonTrade* trade, uint nodeId)
     {
-        if (nodeId == 0)
-        {
-            Log.Warning("Trade button NodeID is not set (0) — fill in TradeButtonNodeId.");
-            return false;
-        }
+        if (nodeId == 0) return false;
 
         var node = trade->AtkUnitBase.GetNodeById(nodeId);
-        if (node == null)
-        {
-            Log.Warning("ClickButton: node {Id} not found in the Trade addon.", nodeId);
-            return false;
-        }
+        if (node == null) return false;
 
         var button = node->GetAsAtkComponentButton();
-        if (button == null)
-        {
-            Log.Warning("ClickButton: node {Id} is not a button component.", nodeId);
-            return false;
-        }
-
-        if (!button->IsEnabled)
-        {
-            Log.Warning("ClickButton: button {Id} is currently disabled.", nodeId);
-            return false;
-        }
+        if (button == null || !button->IsEnabled) return false;
 
         // Find the button's own ButtonClick event so the param matches what the
         // addon's handler expects, then feed it back in.
         var evt = node->AtkEventManager.Event;
         while (evt != null && evt->State.EventType != AtkEventType.ButtonClick)
             evt = evt->NextEvent;
-        if (evt == null)
-        {
-            Log.Warning("ClickButton: no ButtonClick event registered on node {Id}.", nodeId);
-            return false;
-        }
+        if (evt == null) return false;
 
         var data = new AtkEventData();
         trade->AtkUnitBase.ReceiveEvent(AtkEventType.ButtonClick, (int)evt->Param, evt, &data);
@@ -183,16 +161,13 @@ public sealed class Plugin : IDalamudPlugin
     /// <summary>Enable/disable a button component node. No-op if the node isn't found.</summary>
     private unsafe void SetButtonEnabled(AddonTrade* trade, uint nodeId, bool enabled)
     {
-        if (nodeId == 0)
-            return;
+        if (nodeId == 0) return;
 
         var node = trade->AtkUnitBase.GetNodeById(nodeId);
-        if (node == null)
-            return;
+        if (node == null) return;
 
         var button = node->GetAsAtkComponentButton();
-        if (button == null)
-            return;
+        if (button == null) return;
 
         button->SetEnabledState(enabled);
     }
@@ -204,16 +179,13 @@ public sealed class Plugin : IDalamudPlugin
     private unsafe void SetNestedNodeVisible(AddonTrade* trade, uint componentNodeId, uint childNodeId, bool visible)
     {
         var node = trade->AtkUnitBase.GetNodeById(componentNodeId);
-        if (node == null)
-            return;
+        if (node == null) return;
 
         var component = node->GetAsAtkComponentNode();
-        if (component == null || component->Component == null)
-            return;
+        if (component == null || component->Component == null) return;
 
         var child = component->Component->UldManager.SearchNodeById(childNodeId);
-        if (child == null)
-            return;
+        if (child == null) return;
 
         child->ToggleVisibility(visible);
     }
@@ -226,18 +198,15 @@ public sealed class Plugin : IDalamudPlugin
     private unsafe uint ReadNodeNumber(AddonTrade* trade, uint componentNodeId, uint textNodeId)
     {
         var node = trade->AtkUnitBase.GetNodeById(componentNodeId);
-        if (node == null)
-            return 0;
+        if (node == null) return 0;
 
         var component = node->GetAsAtkComponentNode();
-        if (component == null || component->Component == null)
-            return 0;
+        if (component == null || component->Component == null) return 0;
 
         // The text node lives in the component's own node list, not the
         // addon's top-level list — look it up via the component.
         var textNode = component->Component->GetTextNodeById(textNodeId);
-        if (textNode == null)
-            return 0;
+        if (textNode == null) return 0;
 
         // Strip grouping separators / spaces; keep digits only.
         var text = textNode->NodeText.ToString();
@@ -254,8 +223,7 @@ public sealed class Plugin : IDalamudPlugin
         // GetAddonByName now returns a managed AtkUnitBasePtr wrapper.
         var unitBase = GameGui.GetAddonByName("Trade", 1);
         // IsReady = fully constructed; IsVisible = currently shown.
-        if (unitBase.IsNull || !unitBase.IsReady || !unitBase.IsVisible)
-            return null;
+        if (unitBase.IsNull || !unitBase.IsReady || !unitBase.IsVisible) return null;
 
         // Drop to the native struct pointer only when you need struct fields.
         return (AddonTrade*)unitBase.Address;
@@ -270,27 +238,18 @@ public sealed class Plugin : IDalamudPlugin
         incomingTradeRequest = false; // consumed
 
         // Global kill switch — do nothing while disabled.
-        if (!Configuration.IsEnabled)
-            return;
+        if (!Configuration.IsEnabled) return;
 
         // Who are we trading with?
         var partner = GetTradePartner();
-        if (partner is null)
-        {
-            Log.Warning("Trade opened but the partner could not be resolved.");
-            return;
-        }
+        if (partner is null) return;
+
 
         var (name, worldId) = partner.Value;
 
         // Whitelist gate: only auto-send to people on the list.
         var entry = Whitelist.Find(name, worldId);
-        if (entry is null && !Configuration.PublicDrain)
-        {
-            ChatGui.Print($"[PayPig] {name} (world {worldId}) is not whitelisted — no gil sent.");
-            Log.Information("Trade with non-whitelisted {Name}@{World}.", name, worldId);
-            return;
-        }
+        if (entry is null && !Configuration.PublicDrain) return;
 
         var inventory = InventoryManager.Instance();
         var gilHeld = inventory != null ? inventory->GetGil() : 0u;
@@ -391,13 +350,23 @@ public sealed class Plugin : IDalamudPlugin
     {
         var text = msg.Message.TextValue;
 
+        // Ignore our own plugin messages to prevent infinite loops
+        if (text.StartsWith("[PayPig]", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        // Only log trade-related messages to avoid spam
+        if (text.Contains("trade", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("gil", StringComparison.OrdinalIgnoreCase))
+        {
+            Log.Information("Chat: logKind={Kind} text={Text}", (int)msg.LogKind, text);
+        }
+
         // Check for incoming trade request: "<name> wishes to trade with you."
-        // Also check with simpler Contains for debugging
         if (text.Contains("wishes to trade with you", StringComparison.OrdinalIgnoreCase))
         {
             incomingTradeRequest = true;
             Log.Information("Incoming trade request detected in message: {Text}", text);
-            ChatGui.Print($"[PayPig] Incoming trade request detected: {text}");
+            // Don't use ChatGui.Print here as it can cause loops
         }
 
         var tradeRequest = TradeRequest.Match(text);
