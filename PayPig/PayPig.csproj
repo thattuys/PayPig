@@ -3,7 +3,7 @@
   <PropertyGroup>
     <Authors>You</Authors>
     <Company></Company>
-    <Version>0.5.0.0</Version>
+    <Version>0.5.0.1</Version>
     <Description>A Dalamud plugin.</Description>
     <PackageProjectUrl></PackageProjectUrl>
     <Nullable>enable</Nullable>
